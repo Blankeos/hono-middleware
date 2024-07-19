@@ -235,6 +235,9 @@ export type RouteHandler<
     : MaybePromise<RouteConfigToTypedResponse<R>> | MaybePromise<Response>
 >
 
+// Utility to infer the response type from the handler
+type InferHandlerResponseType<T> = T extends Handler<any, any, any, infer R> ? R : never;
+
 export type RouteHook<
   R extends RouteConfig,
   E extends Env = Env,
@@ -388,6 +391,97 @@ export class OpenAPIHono<
           continue
         }
         if (/^application\/([a-z-\.]+\+)?json/.test(mediaType)) {
+          const validator = zValidator('json', schema, hook as any)
+          validators.push(validator as any)
+        }
+        if (
+          mediaType.startsWith('multipart/form-data') ||
+          mediaType.startsWith('application/x-www-form-urlencoded')
+        ) {
+          const validator = zValidator('form', schema, hook as any)
+          validators.push(validator as any)
+        }
+      }
+    }
+
+    const middleware = routeMiddleware
+      ? Array.isArray(routeMiddleware)
+        ? routeMiddleware
+        : [routeMiddleware]
+      : []
+
+    this.on(
+      [route.method],
+      route.path.replaceAll(/\/{(.+?)}/g, '/:$1'),
+      ...middleware,
+      ...validators,
+      handler
+    )
+    return this
+  }
+
+  openapiNoResponse = <
+    R extends RouteConfig,
+    I extends Input = InputTypeParam<R> &
+      InputTypeQuery<R> &
+      InputTypeHeader<R> &
+      InputTypeCookie<R> &
+      InputTypeForm<R> &
+      InputTypeJson<R>,
+    P extends string = ConvertPathType<R['path']>,
+    H extends Handler<E, P, I, any> = Handler<E, P, I, any>
+  >(
+    { middleware: routeMiddleware, ...route }: R,
+    handler: H,
+    hook:
+      | Hook<
+          I,
+          E,
+          P,
+          R
+        >
+      | undefined = this.defaultHook
+  ): OpenAPIHono<
+    E,
+    S & ToSchema<R['method'], MergePath<BasePath, P>, I, InferHandlerResponseType<H>>,
+    BasePath
+  > => {
+    this.openAPIRegistry.registerPath(route)
+
+    const validators: MiddlewareHandler[] = []
+
+    if (route.request?.query) {
+      const validator = zValidator('query', route.request.query as any, hook as any)
+      validators.push(validator as any)
+    }
+
+    if (route.request?.params) {
+      const validator = zValidator('param', route.request.params as any, hook as any)
+      validators.push(validator as any)
+    }
+
+    if (route.request?.headers) {
+      const validator = zValidator('header', route.request.headers as any, hook as any)
+      validators.push(validator as any)
+    }
+
+    if (route.request?.cookies) {
+      const validator = zValidator('cookie', route.request.cookies as any, hook as any)
+      validators.push(validator as any)
+    }
+
+    const bodyContent = route.request?.body?.content
+
+    if (bodyContent) {
+      for (const mediaType of Object.keys(bodyContent)) {
+        if (!bodyContent[mediaType]) {
+          continue
+        }
+        const schema = (bodyContent[mediaType] as ZodMediaTypeObject)['schema']
+        if (!(schema instanceof ZodType)) {
+          continue
+        }
+        if (mediaType.startsWith('application/json')) {
           const validator = zValidator('json', schema, hook as any)
           validators.push(validator as any)
         }
